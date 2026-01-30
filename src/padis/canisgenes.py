@@ -34,13 +34,6 @@ def identify_canisgenes(
     lg.info("Identifying single-copy core orthogroups")
     core = determine_core(pan) 
     lg.info(f"Identified {len(core)} single-copy core orthogroups")
-    
-    lg.info("Initializing genomic positions")
-    # "posind" stands for position indicator
-    posinds = [o + "-" for o in core] + [o + "+" for o in core]
-    positions = pd.DataFrame(
-        {"posind": posinds, "position": range(len(posinds))})
-    positions = positions.set_index("posind")
 
     lg.info("Extracting genome names from gene annotation paths")
     # why not create paths from genome names? 
@@ -53,31 +46,53 @@ def identify_canisgenes(
     # use pandas type "Int64" instead of "int" to be able to hold missing values
     pan["start"] = pd.Series(dtype = "Int64")
     pan["end"] = pd.Series(dtype = "Int64")
-    pan["posind"] = pd.Series(dtype = 'str')
+    pan["posind1"] = pd.Series(dtype = 'str')
+    pan["posind2"] = pd.Series(dtype = 'str')
     # it is faster not to sort the index (pan = pan.sort_index())!
     # probable reason: for a unique index, pandas uses a hashmap for lookup
     # while for a sorted index it uses binary search
     pan = pan.set_index("gene")
-    if intervals_file:
-        with open(intervals_file, "w"):
-            pass
     for genome in genomes: 
         lg.debug(f"Processing genome {genome}")
         genes = read_genes(genes_files_dict[genome])
-        # the following does three things: 
+        # _process_genes does two things for accessory genes: 
         # - add gene coordinates to pangenome table
-        # - merge positions of position indicators if they are adjacent
-        # - add position indicators of accessory genes to pangenome table
-        positions, pan = _process_genes(
-            positions, pan, genes, core, intervals_file)
-    positions = positions.reset_index() 
+        # - add position indicators to pangenome table
+        pan = _process_genes(pan, genes, core)
     pan = pan.reset_index() 
     pan = pan[pan["contig"].notnull()] # keep only accessory genes
 
-    lg.info("Determining genomic positions of genes from position indicators")
+    intervals = pan[pan["posind2"].notnull()][["posind1", "posind2", "genome"]]
+    intervals = intervals.drop_duplicates()
+
+    if intervals_file: 
+        lg.info("Writing pairs of position indicators")
+        intervals.to_csv(intervals_file, index = False)
+
+    lg.info("Processing position indicators")
+    intervals = \
+        intervals[["posind1", "posind2"]].\
+        value_counts().\
+        reset_index(name = "count")
+    lg.info(f"Identified {(intervals['count'] == 1).sum()} singleton position " 
+        "indicator pairs, these will be removed")
+    intervals = intervals[intervals["count"] > 1]
+    posinds = [o + "-" for o in core] + [o + "+" for o in core]
+    positions = pd.DataFrame(
+        {"posind": posinds, "position": range(len(posinds))})
+    positions = positions.set_index("posind")
+    for row in intervals.itertuples():
+        position1 = positions.at[row.posind1, "position"] 
+        position2 = positions.at[row.posind2, "position"] 
+        if position1 != position2:
+            positions.loc[positions.position == position2, "position"] = \
+                position1
+    positions = positions.reset_index()
+
+    lg.info("Assigning genomic positions to accessory genes")
     positions = dict(zip(positions["posind"], positions["position"]))
-    pan["position"] = pan["posind"].map(positions).astype("Int64")
-    pan = pan.drop("posind", axis = 1)
+    pan["position"] = pan["posind1"].map(positions).astype("Int64")
+    pan = pan.drop(["posind1", "posind2"], axis = 1)
     lg.info(f"Identified {pan['position'].nunique()} unique genomic positions")
     lg.info(f"Assigned a position to {pan['position'].count().sum()} out of "
         f"{len(pan)} accessory genes")
@@ -114,19 +129,17 @@ def determine_core(pangenome: pd.DataFrame) -> set[str]:
     core_orthogroups = set(core_orthogroups)
     return(core_orthogroups)
 
-def _process_genes(positions: pd.DataFrame, pan: pd.DataFrame, 
-        genes: pd.DataFrame, core: set[str], intervals_file: Path = None
+def _process_genes(
+        pan: pd.DataFrame, genes: pd.DataFrame, core: set[str]
         ) -> (pd.DataFrame, pd.DataFrame):
     """
     Process gene annotation of a genome (helper of identify_canisgenes). 
     
-    :param positions: DataFrame with posind and position, indexed on posind. 
     :param pan: DataFrame with gene, genome, orthogroup, contig, strand, start,
-        end, and posind. Indexed on gene. 
+        end, posind1 and posind2. Indexed on gene. 
     :param genes: DataFrame with columns of gff file. 
-    :param core: Set with core orthogroups. 
-    :param intervals_file: Path to intervals output file. 
-    :return: Updated positions and pan DataFrames. 
+    :param core: Set with core orthogroups.
+    :return: Updated pan DataFrame. 
     """
     
     contig = None
@@ -135,7 +148,6 @@ def _process_genes(positions: pd.DataFrame, pan: pd.DataFrame,
     right_posind = None
 
     # column indices for iloc (slightly faster than loc)
-    genome_col = pan.columns.get_loc("genome")
     orthogroup_col = pan.columns.get_loc("orthogroup")
     contig_col = pan.columns.get_loc("contig")
     strand_col = pan.columns.get_loc("strand")
@@ -154,7 +166,7 @@ def _process_genes(positions: pd.DataFrame, pan: pd.DataFrame,
         
         # if new contig: resolve interval 
         if row.seqid != contig:
-            pan.loc[interval, "posind"] = left_posind
+            pan.loc[interval, "posind1"] = left_posind
             contig = row.seqid
             interval = []
             left_posind = None
@@ -170,30 +182,15 @@ def _process_genes(positions: pd.DataFrame, pan: pd.DataFrame,
             downstream = row.strand == "-"
             right_posind = orthogroup + ("+" if downstream else "-")
 
-            # assign right side position indicator to genes in interval
-            # (left side position indicator would also be OK but not guaranteed
-            # to be present)
-            pan.loc[interval, "posind"] = right_posind
-
-            # merge positions of left and right side position indicators
             if left_posind:
-                left_position = positions.at[left_posind, "position"] 
-                right_position = positions.at[right_posind, "position"] 
-                if left_position != right_position:
-                    has_right_position = positions.position == right_position
-                    positions.loc[has_right_position, "position"] = \
-                        left_position
-                    
-            if left_posind and intervals_file: 
-                with open(intervals_file, "a") as handle:
-                    genome = pan.iat[gene_row, genome_col]
-                    if left_posind < right_posind:
-                        handle.write(
-                            ",".join([left_posind, right_posind, genome]))
-                    else: 
-                        handle.write(
-                            ",".join([right_posind, left_posind, genome]))
-                    handle.write("\n")
+                if left_posind < right_posind:
+                    pan.loc[interval, "posind1"] = left_posind
+                    pan.loc[interval, "posind2"] = right_posind
+                else:
+                    pan.loc[interval, "posind1"] = right_posind
+                    pan.loc[interval, "posind2"] = left_posind
+            else:
+                pan.loc[interval, "posind1"] = right_posind
 
             interval = []
             left_posind = None
@@ -211,4 +208,4 @@ def _process_genes(positions: pd.DataFrame, pan: pd.DataFrame,
             pan.iloc[gene_row, start_col] = row.start
             pan.iloc[gene_row, end_col] = row.end
 
-    return(positions, pan)
+    return(pan)
