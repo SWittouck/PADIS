@@ -22,7 +22,7 @@ def read_pangenome(file: Path) -> pd.DataFrame:
             file, sep = "\t", names = ["gene", "genome", "orthogroup"])
     return(pangenome)
 
-def read_genes(file: Path) -> pd.DataFrame:
+def read_annotation(file: Path) -> pd.DataFrame:
     """
     Read a gene annotation file in gff format. 
     """
@@ -36,13 +36,21 @@ def read_genes(file: Path) -> pd.DataFrame:
             file, sep = "\t", names = colnames, dtype = types, comment = "#")
     return(genes)
 
+def read_canisgenes(file: Path) -> pd.DataFrame:
+    """
+    Read a table with candidate insertion sequence genes.
+    """
+    types = {"start": "Int64", "end": "Int64", "position": "Int64"}
+    canisgenes = pd.read_csv(file, dtype = types)
+    return(canisgenes)
+
 def read_files(path: Path) -> list[Path]:
     """
     Read list of file paths, either from a file containing the paths or from a 
     directory containing the files themselves. 
     """
     if path.is_dir():
-        files = list(path.iterdir())
+        files = [f for f in path.iterdir()]
     else:
         files = [Path(f.strip()) for f in open(path)]
     return(files)
