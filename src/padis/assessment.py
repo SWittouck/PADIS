@@ -27,9 +27,9 @@ def assess_canisorthogroups(
     lg.info("Indexing genome sequences")
     genomes = {p.stem: Fasta(p) for p in assemblies_files.values()}
 
-    # TEMP
-    topn = canisgenes["orthogroup"].unique()[:20]
-    canisgenes = canisgenes[canisgenes["orthogroup"].isin(topn)]
+    # # for testing purposes
+    # topn = canisgenes["orthogroup"].unique()[:20]
+    # canisgenes = canisgenes[canisgenes["orthogroup"].isin(topn)]
 
     lg.info("Calculating basic orthogroup stats")
     canisogs1 = (
