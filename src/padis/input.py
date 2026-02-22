@@ -1,4 +1,5 @@
 import gzip
+import logging as lg
 import pandas as pd
 from pathlib import Path
 from typing import TextIO
@@ -17,9 +18,15 @@ def read_pangenome(file: Path) -> pd.DataFrame:
     Read a pangenome file in SCARAP format (tsv without column names and with  
     the columns gene, genome and orthogroup). 
     """
+    if not file.is_file(): 
+        lg.error(f"File not found: {file}")
+        sys.exit(1)
+    if file.stat().st_size == 0: 
+        lg.error("File is empty: {file}")
+        sys.exit(1)
     with open_smart(file) as handle:
-        pangenome = pd.read_csv(
-            file, sep = "\t", names = ["gene", "genome", "orthogroup"])
+        colnames = ["gene", "genome", "orthogroup"]
+        pangenome = pd.read_csv(file, sep = "\t", names = colnames)
     return(pangenome)
 
 def read_annotation(file: Path) -> pd.DataFrame:
@@ -44,13 +51,33 @@ def read_canisgenes(file: Path) -> pd.DataFrame:
     canisgenes = pd.read_csv(file, dtype = types)
     return(canisgenes)
 
-def read_files(path: Path) -> list[Path]:
+def read_files(path: Path) -> dict[str, Path]:
     """
     Read list of file paths, either from a file containing the paths or from a 
     directory containing the files themselves. 
     """
+    if not path.exists(): 
+        lg.error(f"File or directory not found: {path}")
+        sys.exit(1)
     if path.is_dir():
         files = [f for f in path.iterdir()]
     else:
         files = [Path(f.strip()) for f in open(path)]
+    if not files: 
+        lg.error(f"No files found in {path}")
+        sys.exit
+    files = {filename_from_path(p): p for p in files}
     return(files)
+
+def filename_from_path(path: Path) -> str:
+    """
+    Extract filename from path of potentially compressed file. 
+    
+    :param path: A path. 
+    :return: The filename without compression extension (if present) and without
+        filetype extension. 
+    """
+    if path.suffix == ".gz":
+        path = path.with_suffix("")
+    filename = path.stem
+    return(filename)

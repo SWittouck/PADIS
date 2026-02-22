@@ -10,16 +10,16 @@ def main() -> None:
     meta = metadata("padis")
     args = parse_arguments(meta) 
 
-    intro = f"""Hi, this is {meta["Name"]} version {meta["Version"]}\n"""
+    intro = f"Hi, this is {meta["Name"]} version {meta["Version"]}\n"
     print(intro)
 
-    genomes_path = Path(args.genomes)
-    genes_path = Path(args.genes)
+    assemblies_path = Path(args.assemblies)
+    annotations_path = Path(args.annotations)
     pangenome_file = Path(args.pangenome)
     output_dir = Path(args.outputdir)
 
     run_padis(
-        genomes_path, genes_path, pangenome_file, output_dir, 
+        assemblies_path, annotations_path, pangenome_file, output_dir, 
         args.write_intervals, args.debug)
 
 def parse_arguments(meta) -> None:
@@ -28,26 +28,29 @@ def parse_arguments(meta) -> None:
         prog = meta["Name"].lower(), description = meta["Summary"])
 
     parser.add_argument(
-        "genomes", 
-        help = "genome sequences in fasta format, either as a file with paths"
-        "or as a directory")
+        "assemblies", 
+        help = "assemblies in fasta format, either as a file with paths or "
+        "as a directory (files should no be compressed)")
     parser.add_argument(
-        "genes", 
-        help = "gene coordinates in gff format, either as a file with paths"
-        "or as a directory")
+        "annotations", 
+        help = "gene coordinates in gff format, either as a file with paths "
+        "or as a directory (files can be gzipped)")
     parser.add_argument(
-        "pangenome", help = "file with pangenome in SCARAP format")
+        "pangenome", 
+        help = "file with pangenome in SCARAP format: no header; tab-separated; " \
+        "columns should be gene, genome and orthogroup (can be gzipped)")
     parser.add_argument(
         "outputdir", help = "directory for output")
-    parser.add_argument(
-        "-v", "--version", action = "version", 
-        version = f"""{meta["Name"]} version {meta["Version"]}""")
     parser.add_argument(
         "-i", "--write_intervals", action = "store_true",
         help = "write left and right position indicators of intervals")
     parser.add_argument(
         "-b", "--debug", action = "store_true", 
-        help = "be extra verbose for debugging")
+        help = "be extra verbose for debugging and continue in output folder " \
+        "if already exists (log file will be appended)")
+    parser.add_argument(
+        "-v", "--version", action = "version", 
+        version = f"""{meta["Name"]} version {meta["Version"]}""")
 
     if len(sys.argv) == 1:
         parser.print_help()

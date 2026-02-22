@@ -1,7 +1,3 @@
-########################
-# implementation notes #
-########################
-
 # abbrevations:
 # canis: candidate insertion sequence
 # posind: position indicator, e.g. "orthogroup1+" = upstream of orthogroup 1
@@ -10,29 +6,32 @@ import logging as lg
 import pandas as pd
 from pathlib import Path
 
-from .input import read_annotation, read_pangenome
+from .input import read_annotation
 
 #############
 # top level #
 #############
 
-def identify_canisgenes(
-        genes_files: list[Path], pangenome_file: Path, canisgenes_file: Path,
-        intervals_file: Path = None) -> None:
+def identify_canisorthogroups(
+        annotation_files: dict[str, Path], genes: pd.DataFrame,
+        canisgenes_file: Path, intervals_file: Path = None) -> None:
     """
     Identify candidate insertion sequence genes. 
     
-    :param genes_files: Annotation files (gff). 
-    :param pangenome_file: File with pangenome in SCARAP format (tsv file 
-        without header with the columns gene, genome and orthogroup)
+    :param annotation_files: Annotation files (gff). 
+    :param genes: Pangenome in SCARAP format (columns gene, genome and 
+        orthogroup)
     :param canisgenes_file: Path to output file for candidate insertion sequence 
         genes. 
     :param intervals_file: Path to output file for intervals (left and right
         position indicators). 
     """
+
+    if canisgenes_file.exists():
+        lg.info("Existing canisgenes file found - skipping phase 1")
+        return() 
     
-    lg.info("Reading pangenome")
-    genes = read_pangenome(pangenome_file)
+    lg.info("Processing pangenome")
     genomes = genes["genome"].unique()
     orthogroups = genes["orthogroup"].unique()
     lg.info(
@@ -53,17 +52,12 @@ def identify_canisgenes(
     coregenes, accgenes = genes[iscore], genes[~ iscore]
     coregene2orthogroup = dict(zip(coregenes["gene"], coregenes["orthogroup"]))
 
-    lg.info("Extracting genome names from gene annotation paths")
-    # why not create paths from genome names? 
-    # --> paths may have different extensions and may be compressed
-    genome2genes_file = {filename_from_path(p): p for p in genes_files}
-
     lg.info("Processing gene annotation files")
     accgenes_chunks = []
     intervals_chunks = []
     for genome in genomes: 
         lg.debug(f"Processing genome {genome}")
-        annotation = read_annotation(genome2genes_file[genome])
+        annotation = read_annotation(annotation_files[genome])
         # intervals needs to be separate from accgenes because we also want to
         # keep track of empty intervals
         accgenes_chunk, intervals_chunk = process_annotation(
@@ -146,7 +140,10 @@ def identify_canisgenes(
         .groupby("orthogroup")
         .filter(lambda g: g["position"].nunique() > 1)
     )
-    lg.info(f"Selected {len(canisgenes)} candidate insertion sequence genes")
+    lg.info(
+        f"Selected {len(canisgenes)} candidate insertion sequence genes "
+        f"belonging to {canisgenes['orthogroup'].nunique()} orthogroups"
+    )
 
     lg.info("Writing candidate insertion sequence genes")
     canisgenes = canisgenes[[
@@ -184,19 +181,6 @@ def determine_core(genes: pd.DataFrame) -> (set[str], set[tuple[str, str]],
     multicopy = set(multicopy)
     zerocopy = set(zerocopy)
     return(core, multicopy, zerocopy)
-
-def filename_from_path(path: Path) -> str:
-    """
-    Extract filename from path of potentially compressed file. 
-    
-    :param path: A path. 
-    :return: The filename without compression extension (if present) and without
-        filetype extension. 
-    """
-    if path.suffix == ".gz":
-        path = path.with_suffix("")
-    filename = path.stem
-    return(filename)
 
 def process_annotation(
         annotation: pd.DataFrame, coregene2orthogroup: dict[str, str]) -> (
