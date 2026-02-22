@@ -9,7 +9,8 @@ from .input import read_files, read_pangenome
 
 def run_padis(
         assemblies_path: Path, annotation_path: Path, pangenome_file: Path, 
-        output_dir: Path, write_intervals: bool = False, debug: bool = False
+        output_dir: Path, write_intervals: bool = False, debug: bool = False,
+        threads = 1
         ) -> None:
     
     lg.basicConfig(
@@ -72,6 +73,6 @@ def run_padis(
         "Starting phase 2: assessment of candidate insertion sequence "
         "orthogroups")
     assess_canisorthogroups(
-        canisgenes_file, assemblies_files, canisorthogroups_file)
+        canisgenes_file, assemblies_files, canisorthogroups_file, threads)
 
     lg.info("PADIS out\n")

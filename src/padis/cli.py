@@ -20,7 +20,7 @@ def main() -> None:
 
     run_padis(
         assemblies_path, annotations_path, pangenome_file, output_dir, 
-        args.write_intervals, args.debug)
+        args.write_intervals, args.debug, args.threads)
 
 def parse_arguments(meta) -> None:
 
@@ -49,6 +49,9 @@ def parse_arguments(meta) -> None:
         help = "be extra verbose for debugging and continue in output folder " \
         "if already exists (log file will be appended)")
     parser.add_argument(
+        "-t", "--threads", type = int,
+        help = "number of threads [default: 1]")
+    parser.add_argument(
         "-v", "--version", action = "version", 
         version = f"""{meta["Name"]} version {meta["Version"]}""")
 
@@ -57,6 +60,9 @@ def parse_arguments(meta) -> None:
         sys.exit(0)
     
     args = parser.parse_args() 
+
+    # set defaults
+    if not "threads" in args: args.threads = 1
 
     return(args)
 

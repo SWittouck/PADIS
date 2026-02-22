@@ -1,4 +1,5 @@
 from Bio import Align
+from concurrent.futures import ProcessPoolExecutor
 import logging as lg
 import pandas as pd
 from pathlib import Path
@@ -12,7 +13,7 @@ from .input import read_canisgenes
 
 def assess_canisorthogroups(
         canisgenes_file: Path, assemblies_files: dict[str, Path], 
-        canisorthogroups_file: Path) -> None:
+        canisorthogroups_file: Path, threads: int) -> None:
     
     flank_size = 3000
 
@@ -22,10 +23,10 @@ def assess_canisorthogroups(
     
     lg.info("Reading candidate insertion sequence genes")
     canisgenes = read_canisgenes(canisgenes_file)
-    genomes = canisgenes["genome"].unique().tolist()
 
-    lg.info("Indexing genome sequences")
-    genomes = {p.stem: Fasta(p) for p in assemblies_files.values()}
+    lg.info("Indexing genome sequences (creates .fai files)")
+    for p in assemblies_files.values():
+        _ = Fasta(p)
 
     # # for testing purposes
     # topn = canisgenes["orthogroup"].unique()[:20]
@@ -42,12 +43,23 @@ def assess_canisorthogroups(
         )
     )
 
-    lg.info("Aligning terminal regions where possible for every orthogroup")
-    canisogs2 = (
-        canisgenes
-        .groupby("orthogroup")
-        .apply(lambda g: process_orthogroup(g, genomes, flank_size))
-    )
+    if threads == 1: 
+        lg.info("Assessing flanking regions per orthogroup")
+        canisogs2 = (
+            canisgenes
+            .groupby("orthogroup")
+            .apply(
+                lambda g: process_orthogroup(g, assemblies_files, flank_size))
+        )
+    else: 
+        lg.info(
+            f"Assessing flanking regions per orthogroup using {threads} "
+            "threads")
+        tasks = [(orthogroup, genes, assemblies_files, flank_size) for
+            orthogroup, genes in canisgenes.groupby("orthogroup", sort = False)]
+        with ProcessPoolExecutor(max_workers = threads) as executor: 
+            results = list(executor.map(_worker, tasks))
+        canisogs2 = pd.DataFrame(results)
 
     lg.info("Merging orthogroup statistics")
     canisogs = (
@@ -63,13 +75,20 @@ def assess_canisorthogroups(
 # lower level #
 ###############
 
-def process_orthogroup(genes, genomes, flank_size):
+def process_orthogroup(genes, assemblies_files, flank_size):
     
     FS = flank_size
 
     lg.debug(f"Processing orthogroup {genes.name}")
 
+    # make copy to avoid modifying original gene table 
+    genes = genes.copy()
+
     genes = genes[genes["position"].notna()]
+
+    # open connections to assembly files
+    # remark: indexing will not happen again since .fai files already exist
+    genomes = {p.stem: Fasta(p) for p in assemblies_files.values()}
 
     gene1, seq1 = sequence_with_flanks(genomes, genes, FS)
     genes = genes.loc[(genes["position"] != gene1.position)]
@@ -118,10 +137,19 @@ def process_orthogroup(genes, genomes, flank_size):
     tir_alignments = aligner.align(term_left.seq, term_right_rc.seq)
     fdr_alignments = aligner.align(term_left.seq, term_right.seq)
     return(pd.Series({
-        "tir_score": tir_alignments[0].score,
-        "fdr_score": fdr_alignments[0].score,
+        "tir_score": int(tir_alignments[0].score),
+        "fdr_score": int(fdr_alignments[0].score),
         "comment": "Termini extraction successful"
     }))
+
+# helper for running process_orthogroup in parallel 
+# needs to be top-level function
+def _worker(task):
+    orthogroup, genes, assemblies_files, flank_size = task
+    genes.name = orthogroup
+    result = process_orthogroup(genes, assemblies_files, flank_size)
+    result.loc["orthogroup"] = orthogroup
+    return(result)
 
 def sequence_with_flanks(
         genomes: dict[Fasta], genes: pd.DataFrame, flanksize: int) -> (tuple, 
