@@ -2,7 +2,7 @@
 # - reg = region: DNA sequence around a gene to align 
 # - ali = aligned section: part of a region that aligns to another region
 # - term = terminus: first/last N nucleotides of aligned section
-# - start: start position of a DNA segment, always smaller than stop
+# - start: start position of a DNA segment, always smaller than end
 # - end: end position of a DNA segment, always greater than start
 # - up = upstream
 # - down = downstream
@@ -97,7 +97,17 @@ def process_orthogroup(
     result = pd.Series({
         "length": 0,
         "tir_score": 0,
+        "tir_offset_up": 0,
+        "tir_offset_down": 0,
+        "tir_length": 0,
+        "tir_up": "",
+        "tir_down": "",
         "fdr_score": 0,
+        "fdr_offset_up": 0,
+        "fdr_offset_down": 0,
+        "fdr_length": 0,
+        "fdr_up": "",
+        "fdr_down": "",
         "too_short": False,
         "too_long": False,
         "includes_region_boundary": False
@@ -129,6 +139,7 @@ def process_orthogroup(
     alico = alignment.coordinates
     ali1_start, ali1_end = [reg1.start + c for c in sorted(alico[0, [0, -1]])]
     ali2_start, ali2_end = [reg2.start + c for c in sorted(alico[1, [0, -1]])]
+    result["length"] = ali1_end - ali1_start
 
     if (
         ali1_start > gene1.start
@@ -150,18 +161,48 @@ def process_orthogroup(
     ): 
         result["includes_region_boundary"] = True
 
+    # switch to coordinates relative to region
     # alico[0, 0] is always smaller than alico[0, -1]
     # (but if gene.strand == "-", alico[1, 0] is larger than alico[1, -1])
-    ali1 = reg1[alico[0, 0]:alico[0, -1]]
-    if gene1.strand == "-": ali1 = ali1.reverse.complement
-    term_up = ali1[:30]
-    term_down = ali1[-30:]
-    term_down_rc = term_down.reverse.complement
-    tir_alignments = aligner.align(term_up.seq, term_down_rc.seq)
-    fdr_alignments = aligner.align(term_up.seq, term_down.seq)
-    result["length"] = np.int64(len(ali1.seq))
+    if gene1.strand == "+":
+        ali_start = alico[0, 0]
+        ali_end = alico[0, -1]
+    else:
+        reg1 = reg1.reverse.complement
+        ali_start = len(reg1.seq) - alico[0, -1]
+        ali_end = len(reg1.seq) - alico[0, 0]
+
+    # assess tir
+    term_up = reg1[ali_start:ali_end][:30]
+    term_down = reg1[ali_start:ali_end][-30:]
+    tir_alignments = aligner.align(term_up.seq, term_down.seq, strand = "-")
+    tir_co = tir_alignments[0].coordinates
     result["tir_score"] = np.int64(tir_alignments[0].score)
+    result["tir_offset_up"] = np.int64(tir_co[0, 0])
+    result["tir_offset_down"] = np.int64(tir_co[1, 0] - 30)
+    result["tir_length"] = np.int64(tir_co[0, -1] - tir_co[0, 0])
+    result["tir_up"] = term_up[tir_co[0, 0]:tir_co[0, -1]]
+    result["tir_down"] = term_down[tir_co[1, -1]:tir_co[1, 0]]
+    result["tir_down"] = result["tir_down"].reverse.complement
+
+    # assess fdr
+    flank_up = reg1[(ali_start - 10):ali_start]
+    flank_down = reg1[ali_end:(ali_end + 10)]
+    try:
+        fdr_alignments = aligner.align(flank_up.seq, flank_down.seq)
+    except ValueError: 
+        return(result)
+    try:
+        fdr_co = fdr_alignments[0].coordinates
+    except IndexError: 
+        return(result)
     result["fdr_score"] = np.int64(fdr_alignments[0].score)
+    result["fdr_offset_up"] = np.int64(fdr_co[0, -1] - 10 - 1)
+    result["fdr_offset_down"] = np.int64(fdr_co[1, 0] + 1)
+    result["fdr_length"] = np.int64(fdr_co[0, -1] - fdr_co[0, 0])
+    result["fdr_up"] = flank_up[fdr_co[0, 0]:fdr_co[0, -1]]
+    result["fdr_down"] = flank_down[fdr_co[1, 0]:fdr_co[1, -1]]
+
     return(result)
 
 # helper for running process_orthogroup in parallel 
