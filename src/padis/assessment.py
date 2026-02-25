@@ -100,7 +100,7 @@ def process_orthogroup(
         "fdr_score": 0,
         "too_short": False,
         "too_long": False,
-        "includes_contig_boundary": False
+        "includes_region_boundary": False
     })
 
     # make copy to avoid modifying original gene table 
@@ -148,7 +148,7 @@ def process_orthogroup(
         or ali2_start == reg2.start
         or ali2_end == reg2.end
     ): 
-        result["includes_contig_boundary"] = True
+        result["includes_region_boundary"] = True
 
     # alico[0, 0] is always smaller than alico[0, -1]
     # (but if gene.strand == "-", alico[1, 0] is larger than alico[1, -1])
