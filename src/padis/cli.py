@@ -42,7 +42,7 @@ def parse_arguments(meta) -> None:
     parser.add_argument(
         "outputdir", help = "directory for output")
     parser.add_argument(
-        "-l", "--max_length", default = 3000,
+        "-l", "--max_length", type = int, default = 3000,
         help = "maximum length of the insertion sequences in base pairs "
         "[default: 3,000]")
     parser.add_argument(
