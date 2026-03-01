@@ -10,7 +10,7 @@ def main() -> None:
     meta = metadata("padis")
     args = parse_arguments(meta) 
 
-    intro = f"Hi, this is {meta["Name"]} version {meta["Version"]}\n"
+    intro = f"Hi, this is {meta['Name']} version {meta['Version']}\n"
     print(intro)
 
     assemblies_path = Path(args.assemblies)
