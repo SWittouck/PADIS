@@ -13,7 +13,7 @@ classifiers = [
 license = "GPL-3.0-or-later"
 requires-python = ">=3.10,<4"
 dependencies = [
-  "biopython>=1.86,<2",
+  "biopython>=1.79,<2",
   "pandas>=1.5,<4",
   "pyfaidx>=0.1.0,<1"
 ]
