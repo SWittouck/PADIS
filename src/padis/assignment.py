@@ -12,23 +12,24 @@ from .input import read_annotation
 # top level #
 #############
 
-def identify_canisorthogroups(
+def assign_positions(
         annotation_files: dict[str, Path], genes: pd.DataFrame,
-        canisgenes_file: Path, intervals_file: Path = None) -> None:
+        acc_genes_file: Path, intervals_file: Path = None
+    ) -> None:
     """
-    Identify candidate insertion sequence genes. 
+    Assign genomic positions to accessory genes.
     
     :param annotation_files: Annotation files (gff). 
     :param genes: Pangenome in SCARAP format (columns gene, genome and 
         orthogroup)
-    :param canisgenes_file: Path to output file for candidate insertion sequence 
+    :param acc_genes_file: Path to output file for positions of accessory
         genes. 
     :param intervals_file: Path to output file for intervals (left and right
         position indicators). 
     """
 
-    if canisgenes_file.exists():
-        lg.info("Existing canisgenes file found - skipping phase 1")
+    if acc_genes_file.exists():
+        lg.info("Existing accessory gene table found - skipping phase 1")
         return() 
     
     lg.info("Processing pangenome")
@@ -36,60 +37,70 @@ def identify_canisorthogroups(
     orthogroups = genes["orthogroup"].unique()
     lg.info(
         f"Pangenome contains {len(genes)} genes, {len(genomes)} genomes "
-        f"and {len(orthogroups)} orthogroups")
+        f"and {len(orthogroups)} orthogroups"
+    )
 
     lg.info("Identifying single-copy core orthogroups")
     core, multicopy, zerocopy = determine_core(genes) 
     lg.info(f"Identified {len(core)} 95% single-copy core orthogroups")
     lg.info(
         f"Identified {len(multicopy)} instances of a core orthogroup copy "
-        "number greater than one")
+        "number greater than one"
+    )
     lg.info(
         f"Identified {len(zerocopy)} instances of a core orthogroup copy "
-        "number of zero")
+        "number of zero"
+    )
     
     iscore = genes["orthogroup"].isin(core)
-    coregenes, accgenes = genes[iscore], genes[~ iscore]
-    coregene2orthogroup = dict(zip(coregenes["gene"], coregenes["orthogroup"]))
+    core_genes, acc_genes = genes[iscore], genes[~ iscore]
+    coregene2orthogroup = dict(zip(
+        core_genes["gene"], core_genes["orthogroup"]
+    ))
 
     lg.info("Processing gene annotation files")
-    accgenes_chunks = []
+    acc_genes_chunks = []
     intervals_chunks = []
     for genome in genomes: 
         lg.debug(f"Processing genome {genome}")
         annotation = read_annotation(annotation_files[genome])
-        # intervals needs to be separate from accgenes because we also want to
+        # intervals needs to be separate from acc_genes because we also want to
         # keep track of empty intervals
-        accgenes_chunk, intervals_chunk = process_annotation(
-            annotation, coregene2orthogroup)
+        acc_genes_chunk, intervals_chunk = process_annotation(
+            annotation, coregene2orthogroup
+        )
         intervals_chunk["genome"] = genome
-        accgenes_chunks.append(accgenes_chunk)
+        acc_genes_chunks.append(acc_genes_chunk)
         intervals_chunks.append(intervals_chunk)
-    accgenes2 = pd.concat(accgenes_chunks).set_index("gene")
-    accgenes = accgenes.set_index("gene").join(accgenes2) 
-    accgenes = accgenes.reset_index() 
+    acc_genes2 = pd.concat(acc_genes_chunks).set_index("gene")
+    acc_genes = acc_genes.set_index("gene").join(acc_genes2) 
+    acc_genes = acc_genes.reset_index() 
     intervals = pd.concat(intervals_chunks)
     intervals = intervals[["genome", "interval", "posind1", "posind2"]]
 
     lg.info("Removing multi-copy core gene instances from intervals")
     intervals["tocheck"] = list(zip(
-        intervals["genome"], intervals["posind1"].str[:-1]))
+        intervals["genome"], intervals["posind1"].str[:-1]
+    ))
     intervals.loc[intervals["tocheck"].isin(multicopy), "posind1"] = None
     intervals["tocheck"] = list(zip(
-        intervals["genome"], intervals["posind2"].str[:-1]))
+        intervals["genome"], intervals["posind2"].str[:-1]
+    ))
     intervals.loc[intervals["tocheck"].isin(multicopy), "posind2"] = None
     intervals = intervals.drop(columns = ["tocheck"])
 
     lg.info("Removing singleton position indicator pairs")
     intervals["is_singleton"] = ~ intervals.duplicated(
-        subset = ["posind1", "posind2"], keep = False)
+        subset = ["posind1", "posind2"], keep = False
+    )
     intervals.loc[intervals["is_singleton"], "posind1"] = None
     intervals.loc[intervals["is_singleton"], "posind2"] = None
     intervals = intervals.drop(columns = ["is_singleton"])
 
     lg.info(
         "Removing position indicator pairs likely created due to core gene "
-        "absence")
+        "absence"
+    )
     ind2pos = define_positions(intervals) # ind2pos = posind2position
     intervals["position"] = intervals["posind1"].map(ind2pos).astype("Int64")
     # we need to convert the zerocopy instances from (genome, orthogroup) to
@@ -103,7 +114,8 @@ def identify_canisorthogroups(
         except KeyError as e:
             lg.warning(
                 f"Zerocopy position indicator {e.args[0]} not found in "
-                "position indicator table")
+                "position indicator table"
+            )
     zerocopy_positions = set(zerocopy_positions)
     # every interval has a position identifier; we have to check those against
     # the zerocopy positions
@@ -111,8 +123,9 @@ def identify_canisorthogroups(
     intervals["may_miss_core"] = intervals["tocheck"].isin(zerocopy_positions)
     intervals.loc[intervals["may_miss_core"], "posind1"] = None
     intervals.loc[intervals["may_miss_core"], "posind2"] = None
-    intervals = intervals.drop(
-        columns = ["tocheck", "may_miss_core", "position"])
+    intervals = (
+        intervals.drop(columns = ["tocheck", "may_miss_core", "position"])
+    )
 
     if intervals_file: 
         lg.info("Writing interval table")
@@ -124,39 +137,30 @@ def identify_canisorthogroups(
     lg.info("Assigning genomic positions to accessory genes")
     intervals["position"] = intervals["posind1"].map(ind2pos).astype("Int64")
     intervals = intervals.set_index(["genome", "interval"])
-    accgenes = accgenes.set_index(["genome", "interval"])
-    accgenes = accgenes.join(intervals)
-    accgenes = accgenes.reset_index().drop(columns = ["interval"])
+    acc_genes = acc_genes.set_index(["genome", "interval"])
+    acc_genes = acc_genes.join(intervals)
+    acc_genes = acc_genes.reset_index().drop(columns = ["interval"])
     lg.info(
-        f"Assigned {accgenes['position'].nunique()} unique genomic positions")
-    n_withpos = accgenes['position'].count()
-    n_acc = len(accgenes)
+        f"Assigned {acc_genes['position'].nunique()} unique genomic positions")
+    n_withpos = acc_genes['position'].count()
+    n_acc = len(acc_genes)
     lg.info(f"Assigned a position to {n_withpos} out of {n_acc} accessory "
-        f"genes ({n_withpos / n_acc * 100:.1f}%)")
-
-    lg.info("Selecting candidate insertion sequence genes")
-    canisgenes = (
-        accgenes
-        .groupby("orthogroup")
-        .filter(lambda g: g["position"].nunique() > 1)
-    )
-    lg.info(
-        f"Selected {len(canisgenes)} candidate insertion sequence genes "
-        f"belonging to {canisgenes['orthogroup'].nunique()} orthogroups"
+        f"genes ({n_withpos / n_acc * 100:.1f}%)"
     )
 
-    lg.info("Writing candidate insertion sequence genes")
-    canisgenes = canisgenes[[
+    lg.info("Writing accessory gene table with positions")
+    acc_genes = acc_genes[[
         "gene", "genome", "orthogroup", "contig", "strand", "start", "end", 
         "position"]]
-    canisgenes.to_csv(canisgenes_file, index = False)
+    acc_genes.to_csv(acc_genes_file, index = False)
 
 ###############
 # lower level #
 ###############
 
-def determine_core(genes: pd.DataFrame) -> (set[str], set[tuple[str, str]], 
-        set[tuple[str, str]]):
+def determine_core(
+        genes: pd.DataFrame
+    ) -> tuple[set[str], set[tuple[str, str]], set[tuple[str, str]]]:
     """
     Identify the 95% single-copy core orthogroups in a pangenome. 
     
@@ -183,10 +187,10 @@ def determine_core(genes: pd.DataFrame) -> (set[str], set[tuple[str, str]],
     return(core, multicopy, zerocopy)
 
 def process_annotation(
-        annotation: pd.DataFrame, coregene2orthogroup: dict[str, str]) -> (
-        pd.DataFrame, pd.DataFrame):
+        annotation: pd.DataFrame, coregene2orthogroup: dict[str, str]
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Process gene annotation of a genome (helper of identify_canisgenes). 
+    Process gene annotation of a genome (helper of identify_positions).
 
     Implementation note: an interval has the form (interval_id, posind1,
     posind2) where posind1 and posind2 are sorted in lexicographical order. 
@@ -274,7 +278,8 @@ def process_annotation(
     genes = genes[genes["interval"].notnull()]
 
     intervals = pd.DataFrame.from_records(
-        intervals, columns = ["interval", "posind1", "posind2"])
+        intervals, columns = ["interval", "posind1", "posind2"]
+    )
 
     return(genes, intervals)
 

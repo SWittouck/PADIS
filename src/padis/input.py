@@ -43,13 +43,13 @@ def read_annotation(file: Path) -> pd.DataFrame:
             file, sep = "\t", names = colnames, dtype = types, comment = "#")
     return(genes)
 
-def read_canisgenes(file: Path) -> pd.DataFrame:
+def read_acc_genes(file: Path) -> pd.DataFrame:
     """
     Read a table with candidate insertion sequence genes.
     """
     types = {"start": "Int64", "end": "Int64", "position": "Int64"}
-    canisgenes = pd.read_csv(file, dtype = types)
-    return(canisgenes)
+    acc_genes = pd.read_csv(file, dtype = types)
+    return(acc_genes)
 
 def read_files(path: Path) -> dict[str, Path]:
     """

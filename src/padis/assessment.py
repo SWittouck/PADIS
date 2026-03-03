@@ -17,104 +17,121 @@ from pathlib import Path
 from pyfaidx import Fasta, Sequence
 from random import sample
 
-from .input import read_canisgenes
+from .input import read_acc_genes
 
 #############
 # top level #
 #############
 
-def assess_canisorthogroups(
-        canisgenes_file: Path, assemblies_files: dict[str, Path],
-        canisorthogroups_file: Path, max_length: int, threads: int
-        ) -> None:
+def assess_orthogroups(
+        acc_genes_file: Path, assembly_files: dict[str, Path],
+        acc_orthogroups_file: Path, summary_file: Path, max_length: int, 
+        threads: int
+    ) -> None:
+    """
+    Assess accessory orthogroups for IS status. 
+    
+    :param acc_genes_file: Path to accessory gene table with columns gene, 
+        genome, orthogroup, contig, strand, start, end and position. 
+    :param assembly_files: List of paths to assembly (.fna) files.
+    :param acc_orthogroups_file: Path to output file for orthogroup stats.
+    :param summary_file: Path to output file for summary stats.
+    :max_length: Maximum length of detected insertion sequences.
+    :threads: Number of threads to use.
+    """
 
-    if canisorthogroups_file.exists():
-        lg.info("Existing canisorthogroups file found - skipping phase 2")
+    if acc_orthogroups_file.exists():
+        lg.info(
+            "Existing accessory orthogroup table file found - skipping phase 2"
+        )
         return() 
     
     lg.info("Reading candidate insertion sequence genes")
-    canisgenes = read_canisgenes(canisgenes_file)
+    acc_genes = read_acc_genes(acc_genes_file)
 
     lg.info("Indexing genome sequences (creates .fai files)")
-    for p in assemblies_files.values():
+    for p in assembly_files.values():
         _ = Fasta(p)
 
     # # subset orthogroups for testing purposes
-    # topn = canisgenes["orthogroup"].unique()[:20]
-    # canisgenes = canisgenes[canisgenes["orthogroup"].isin(topn)]
-
-    lg.info("Calculating basic orthogroup stats")
-    canisogs1 = (
-        canisgenes
-        .groupby("orthogroup")
-        .agg(
-            genes = ("gene", "size"),
-            genomes = ("genome", "nunique"),
-            positions = ("position", "nunique")
-        )
-    )
+    # topn = acc_genes["orthogroup"].unique()[:20]
+    # acc_genes = acc_genes[acc_genes["orthogroup"].isin(topn)]
 
     if threads == 1: 
         lg.info("Assessing flanking regions per orthogroup")
-        canisogs2 = (
-            canisgenes
+        acc_ogs = (
+            acc_genes
             .groupby("orthogroup")
-            .apply(
-                lambda g: process_orthogroup(g, assemblies_files, max_length)
-            )
+            .apply(lambda genes: process_orthogroup(
+                genes, assembly_files, max_length
+            ))
+            .reset_index()
         )
     else: 
         lg.info(
             f"Assessing flanking regions per orthogroup using {threads} "
             "threads")
-        tasks = [(orthogroup, genes, assemblies_files, max_length) for
-            orthogroup, genes in canisgenes.groupby("orthogroup", sort = False)]
+        tasks = [(orthogroup, genes, assembly_files, max_length) for
+            orthogroup, genes in acc_genes.groupby("orthogroup", sort = False)]
         with ProcessPoolExecutor(max_workers = threads) as executor: 
             results = list(executor.map(_worker, tasks))
-        canisogs2 = pd.DataFrame(results).set_index("orthogroup")
-
-    lg.info("Merging orthogroup statistics")
-    canisogs = (
-        canisogs1
-        .merge(canisogs2, on = "orthogroup")
-        .reset_index()
-    )
+        acc_ogs = pd.DataFrame(results) # .set_index("orthogroup")
 
     lg.info("Writing candidate insertion sequence orthogroups")
-    canisogs.to_csv(canisorthogroups_file, index = False)
+    acc_ogs.to_csv(acc_orthogroups_file, index = False)
+
+    lg.info("Writing summary file")
+    (
+        acc_ogs["status"]
+        .value_counts()
+        .reset_index(name = "orthogroups")
+        .to_csv(summary_file, index = False)
+    )
 
 ###############
 # lower level #
 ###############
 
 def process_orthogroup(
-        genes: pd.DataFrame, assemblies_files: dict[str, Path], 
+        genes: pd.DataFrame, assembly_files: dict[str, Path], 
         max_length: int
-        ) -> pd.Series:
+    ) -> pd.Series:
 
     orthogroup = genes.name
     lg.debug(f"Processing orthogroup {orthogroup}")
 
     result = pd.Series({
+        "genes": genes["gene"].size,
+        "genomes": genes["genome"].nunique(),
+        "located": genes["position"].count(),
+        "positions": genes["position"].nunique(),
+        "status": "potential IS",
         "length": 0,
         "tir_score": 0,
+        "tir_length": 0,
         "tir_offset_up": 0,
         "tir_offset_down": 0,
-        "tir_length": 0,
-        "tir_up": "",
-        "tir_down": "",
         "tir_random_score": 0,
         "tir_random_length": 0,
         "fdr_score": 0,
+        "fdr_length": 0,
         "fdr_offset_up": 0,
         "fdr_offset_down": 0,
-        "fdr_length": 0,
+        "tir_up": "",
+        "tir_down": "",
         "fdr_up": "",
-        "fdr_down": "",
-        "too_short": False,
-        "too_long": False,
-        "includes_region_boundary": False
+        "fdr_down": ""
     })
+
+    if result["genes"] == 1:
+        result["status"] = "singleton"
+        return(result)
+    if result["located"] <= 1:
+        result["status"] = "insufficient positions"
+        return(result)
+    if result["positions"] == 1:
+        result["status"] = "no position variation"
+        return(result)
 
     # make copy to avoid modifying original gene table 
     genes = genes.copy()
@@ -123,7 +140,7 @@ def process_orthogroup(
 
     # open connections to assembly files
     # remark: indexing will not happen again since .fai files already exist
-    genomes = {p.stem: Fasta(p) for p in assemblies_files.values()}
+    genomes = {p.stem: Fasta(p) for p in assembly_files.values()}
 
     gene1, reg1 = best_region(genomes, genes, max_length)
     genes = genes.loc[(genes["position"] != gene1.position)]
@@ -134,6 +151,7 @@ def process_orthogroup(
         lg.warning(f"Unable to find two regions to align for {orthogroup}")
         return(result)
 
+    # align regions
     aligner = Align.PairwiseAligner(scoring = "blastn")
     aligner.mode = "local"
     strand = "+" if gene1.strand == gene2.strand else "-"
@@ -150,19 +168,12 @@ def process_orthogroup(
         or ali2_start > gene2.start
         or ali2_end < gene2.end
     ):
-        result["too_short"] = True
+        result["status"] = "gene outside region"
         return(result)
 
     if (ali1_end - ali1_start) > max_length:
-        result["too_long"] = True
-
-    if (
-        ali1_start == reg1.start
-        or ali1_end == reg1.end
-        or ali2_start == reg2.start
-        or ali2_end == reg2.end
-    ): 
-        result["includes_region_boundary"] = True
+        result["status"] = "too long"
+        return(result)
 
     # switch to coordinates relative to region
     # alico[0, 0] is always smaller than alico[0, -1]
@@ -217,22 +228,22 @@ def process_orthogroup(
 # helper for running process_orthogroup in parallel 
 # needs to be top-level function
 def _worker(task):
-    orthogroup, genes, assemblies_files, max_length = task
+    orthogroup, genes, assembly_files, max_length = task
     genes.name = orthogroup
-    result = process_orthogroup(genes, assemblies_files, max_length)
+    result = process_orthogroup(genes, assembly_files, max_length)
     result.loc["orthogroup"] = orthogroup
     return(result)
 
 def best_region(
         genomes: dict[Fasta], genes: pd.DataFrame, max_length: int
-        ) -> tuple[tuple, Sequence]:
+    ) -> tuple[tuple, Sequence]:
     """
     Find the gene with the best surrounding region.
 
     The best region is the longest (within 2 * max_length - gene_length),
     excluding uncalled bases.
 
-    :param genomes: Genome sequence (fna file) for every genome
+    :param genomes: Assembly path (fna file) for every genome
     :param genes: Coordinates of all genes 
     :param max_length: Maximum length of insertion sequence
     """
