@@ -66,12 +66,13 @@ def assess_orthogroups(
             .apply(lambda genes: process_orthogroup(
                 genes, assembly_files, max_length
             ))
-            .reset_index()
+            .reset_index(drop = True)
         )
     else: 
         lg.info(
             f"Assessing flanking regions per orthogroup using {threads} "
-            "threads")
+            "threads"
+        )
         tasks = [(orthogroup, genes, assembly_files, max_length) for
             orthogroup, genes in acc_genes.groupby("orthogroup", sort = False)]
         with ProcessPoolExecutor(max_workers = threads) as executor: 
@@ -102,6 +103,7 @@ def process_orthogroup(
     lg.debug(f"Processing orthogroup {orthogroup}")
 
     result = pd.Series({
+        "orthogroup": orthogroup,
         "genes": genes["gene"].size,
         "genomes": genes["genome"].nunique(),
         "located": genes["position"].count(),
@@ -246,7 +248,6 @@ def _worker(task):
     orthogroup, genes, assembly_files, max_length = task
     genes.name = orthogroup
     result = process_orthogroup(genes, assembly_files, max_length)
-    result.loc["orthogroup"] = orthogroup
     return(result)
 
 def best_region(
