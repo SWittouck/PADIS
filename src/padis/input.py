@@ -1,3 +1,4 @@
+import sys
 import gzip
 import logging as lg
 import pandas as pd
@@ -24,9 +25,8 @@ def read_pangenome(file: Path) -> pd.DataFrame:
     if file.stat().st_size == 0: 
         lg.error("File is empty: {file}")
         sys.exit(1)
-    with open_smart(file) as handle:
-        colnames = ["gene", "genome", "orthogroup"]
-        pangenome = pd.read_csv(file, sep = "\t", names = colnames)
+    colnames = ["gene", "genome", "orthogroup"]
+    pangenome = pd.read_csv(file, sep = "\t", names = colnames)
     return(pangenome)
 
 def read_annotation(file: Path) -> pd.DataFrame:
@@ -38,8 +38,7 @@ def read_annotation(file: Path) -> pd.DataFrame:
     types = {"seqid": "str", "source": "str", "type": "str", "start": "int", 
         "end": "int", "score": "float", "strand": "str", "phase": "int", 
         "attr": "str"}
-    with open_smart(file) as handle:
-        genes = pd.read_csv(
+    genes = pd.read_csv(
             file, sep = "\t", names = colnames, dtype = types, comment = "#")
     return(genes)
 
@@ -65,7 +64,7 @@ def read_files(path: Path) -> dict[str, Path]:
         files = [Path(f.strip()) for f in open(path)]
     if not files: 
         lg.error(f"No files found in {path}")
-        sys.exit
+        sys.exit(1)
     files = {filename_from_path(p): p for p in files}
     return(files)
 
