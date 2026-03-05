@@ -24,9 +24,8 @@ def read_pangenome(file: Path) -> pd.DataFrame:
     if file.stat().st_size == 0: 
         lg.error("File is empty: {file}")
         sys.exit(1)
-    with open_smart(file) as handle:
-        colnames = ["gene", "genome", "orthogroup"]
-        pangenome = pd.read_csv(file, sep = "\t", names = colnames)
+    colnames = ["gene", "genome", "orthogroup"]
+    pangenome = pd.read_csv(file, sep = "\t", names = colnames)
     return(pangenome)
 
 def read_annotation(file: Path) -> pd.DataFrame:
@@ -38,8 +37,7 @@ def read_annotation(file: Path) -> pd.DataFrame:
     types = {"seqid": "str", "source": "str", "type": "str", "start": "int", 
         "end": "int", "score": "float", "strand": "str", "phase": "int", 
         "attr": "str"}
-    with open_smart(file) as handle:
-        genes = pd.read_csv(
+    genes = pd.read_csv(
             file, sep = "\t", names = colnames, dtype = types, comment = "#")
     return(genes)
 
