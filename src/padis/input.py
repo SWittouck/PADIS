@@ -1,3 +1,4 @@
+import sys
 import gzip
 import logging as lg
 import pandas as pd
@@ -63,7 +64,7 @@ def read_files(path: Path) -> dict[str, Path]:
         files = [Path(f.strip()) for f in open(path)]
     if not files: 
         lg.error(f"No files found in {path}")
-        sys.exit
+        sys.exit(1)
     files = {filename_from_path(p): p for p in files}
     return(files)
 
