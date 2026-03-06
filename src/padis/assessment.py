@@ -142,14 +142,9 @@ def process_orthogroup(
     genes = genes.copy()
 
     genes = genes[genes["position"].notna()]
-
-    # open connections to assembly files
-    # remark: indexing will not happen again since .fai files already exist
-    genomes = {p.stem: Fasta(p) for p in assembly_files.values()}
-
-    gene1, reg1 = best_region(genomes, genes, max_length)
+    gene1, reg1 = best_region(assembly_files, genes, max_length)
     genes = genes.loc[(genes["position"] != gene1.position)]
-    gene2, reg2 = best_region(genomes, genes, max_length)
+    gene2, reg2 = best_region(assembly_files, genes, max_length)
 
     # remark: this should normally not happen
     if not reg1 or not reg2:
@@ -167,6 +162,10 @@ def process_orthogroup(
     ali2_start, ali2_end = [reg2.start + c for c in sorted(alico[1, [0, -1]])]
     result["length"] = ali1_end - ali1_start
 
+    if result["length"] > max_length:
+        result["status"] = "too long"
+        return(result)
+
     if (
         ali1_start > gene1.start
         or ali1_end < gene1.end
@@ -174,10 +173,6 @@ def process_orthogroup(
         or ali2_end < gene2.end
     ):
         result["status"] = "gene outside region"
-        return(result)
-
-    if (ali1_end - ali1_start) > max_length:
-        result["status"] = "too long"
         return(result)
 
     # switch to coordinates relative to region
@@ -251,7 +246,7 @@ def _worker(task):
     return(result)
 
 def best_region(
-        genomes: dict[Fasta], genes: pd.DataFrame, max_length: int
+        assembly_files: dict[str, Path], genes: pd.DataFrame, max_length: int
     ) -> tuple[tuple, Sequence]:
     """
     Find the gene with the best surrounding region.
@@ -259,7 +254,7 @@ def best_region(
     The best region is the longest (within 2 * max_length - gene_length),
     excluding uncalled bases.
 
-    :param genomes: Assembly path (fna file) for every genome
+    :param assembly_files: Assembly path (fna file) for every genome
     :param genes: Coordinates of all genes 
     :param max_length: Maximum length of insertion sequence
     """
@@ -275,7 +270,8 @@ def best_region(
         if region_start < 0:
             perfect_region = False
             region_start = 0
-        region = genomes[gene.genome][gene.contig][region_start:region_end]
+        assembly = Fasta(assembly_files[gene.genome])
+        region = assembly[gene.contig][region_start:region_end]
         if region.end < region_end:
             perfect_region = False
         uncalled_bases = region.seq.count("N")
