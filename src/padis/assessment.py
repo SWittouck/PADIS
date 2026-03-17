@@ -1,9 +1,12 @@
 # terms/abbreviations: 
-# - reg = region: DNA sequence around a gene to align 
-# - ali = aligned section: part of a region that aligns to another region
+# - ext_region = extended region: DNA sequence around a gene to align 
+# - hom_region = homologous region: the section of the extended region that
+#   aligns to another extended region
 # - term = terminus: first/last N nucleotides of aligned section
-# - start: start position of a DNA segment, always smaller than end
-# - end: end position of a DNA segment, always greater than start
+# - start: start position of a DNA segment, always smaller than "end" and with a
+#   1-base offset (gff style)
+# - end: end position of a DNA segment, always greater than "start" and with a
+#   1-base offset (gff style)
 # - up = upstream
 # - down = downstream
 # - rc = reverse complement
@@ -47,7 +50,7 @@ def assess_orthogroups(
         )
         return() 
     
-    lg.info("Reading candidate insertion sequence genes")
+    lg.info("Reading accessory gene table")
     acc_genes = read_acc_genes(acc_genes_file)
 
     lg.info("Indexing genome sequences (creates .fai files)")
@@ -104,11 +107,11 @@ def process_orthogroup(
 
     result = pd.Series({
         "orthogroup": orthogroup,
+        "status": "potential IS",
         "genes": genes["gene"].size,
         "genomes": genes["genome"].nunique(),
         "located": genes["position"].count(),
         "positions": genes["position"].nunique(),
-        "status": "potential IS",
         "length": pd.NA,
         "tir_score": pd.NA,
         "tir_nscore": pd.NA,
@@ -118,14 +121,8 @@ def process_orthogroup(
         "tir_random_score": pd.NA,
         "tir_random_nscore": pd.NA,
         "tir_random_length": pd.NA,
-        "fdr_score": pd.NA,
-        "fdr_length": pd.NA,
-        "fdr_offset_up": pd.NA,
-        "fdr_offset_down": pd.NA,
         "tir_up": "",
-        "tir_down": "",
-        "fdr_up": "",
-        "fdr_down": ""
+        "tir_down": ""
     })
 
     if result["genes"] == 1:
@@ -141,59 +138,50 @@ def process_orthogroup(
     # make copy to avoid modifying original gene table 
     genes = genes.copy()
 
+    # identify two example extended regions
     genes = genes[genes["position"].notna()]
-    gene1, reg1 = best_region(assembly_files, genes, max_length)
+    gene1, ext_region1 = best_region(assembly_files, genes, max_length)
     genes = genes.loc[(genes["position"] != gene1.position)]
-    gene2, reg2 = best_region(assembly_files, genes, max_length)
+    gene2, ext_region2 = best_region(assembly_files, genes, max_length)
 
-    # remark: this should normally not happen
-    if not reg1 or not reg2:
-        lg.warning(f"Unable to find two regions to align for {orthogroup}")
-        return(result)
-
-    # align regions
+    # align extended regions -> identify homologous region
     aligner = Align.PairwiseAligner(scoring = "blastn")
     aligner.mode = "local"
     strand = "+" if gene1.strand == gene2.strand else "-"
-    alignments = aligner.align(reg1.seq, reg2.seq, strand = strand)
-    alignment = alignments[0]
-    alico = alignment.coordinates
-    ali1_start, ali1_end = [reg1.start + c for c in sorted(alico[0, [0, -1]])]
-    ali2_start, ali2_end = [reg2.start + c for c in sorted(alico[1, [0, -1]])]
-    result["length"] = ali1_end - ali1_start
+    alignment = aligner.align(
+        ext_region1.seq, ext_region2.seq, strand = strand
+    )[0]
+    homco = alignment.coordinates
+    hom_region1 = ext_region1[homco[0, 0]:homco[0, -1]]
+    f, t = sorted(homco[1, [0, -1]])
+    hom_region2 = ext_region2[f:t]
 
+    # determine length of homologous region
+    result["length"] = len(hom_region1)
     if result["length"] > max_length:
         result["status"] = "too long"
         return(result)
 
+    # check whether gene lies within homologous region
     if (
-        ali1_start > gene1.start
-        or ali1_end < gene1.end
-        or ali2_start > gene2.start
-        or ali2_end < gene2.end
+        hom_region1.start > gene1.start
+        or hom_region1.end < gene1.end
+        or hom_region2.start > gene2.start
+        or hom_region2.end < gene2.end
     ):
-        result["status"] = "gene outside region"
+        result["status"] = "gene outside homologous region"
         return(result)
 
-    # switch to coordinates relative to region
-    # alico[0, 0] is always smaller than alico[0, -1]
-    # (but if gene.strand == "-", alico[1, 0] is larger than alico[1, -1])
-    if gene1.strand == "+":
-        ali_start = alico[0, 0]
-        ali_end = alico[0, -1]
-    else:
-        reg1 = reg1.reverse.complement
-        ali_start = len(reg1.seq) - alico[0, -1]
-        ali_end = len(reg1.seq) - alico[0, 0]
-
-    # assess tir
-    termseq_up = reg1[ali_start:ali_end][:30].seq
-    termseq_down = reg1[ali_start:ali_end][-30:].seq
+    # assess tir of homologous region
+    if gene1.strand == "-":
+        ext_region1 = ext_region1.reverse.complement
+    termseq_up = hom_region1[:30].seq
+    termseq_down = hom_region1[-30:].seq
     tir_alignment = aligner.align(termseq_up, termseq_down, strand = "-")[0]
     tir_co = tir_alignment.coordinates
     result["tir_score"] = np.int64(tir_alignment.score)
     result["tir_offset_up"] = np.int64(tir_co[0, 0])
-    result["tir_offset_down"] = np.int64(tir_co[1, 0] - 30)
+    result["tir_offset_down"] = np.int64(30 - tir_co[1, 0])
     result["tir_length"] = np.int64(tir_alignment.length)
     result["tir_up"] = tir_alignment[0]
     result["tir_down"] = tir_alignment[1]
@@ -216,24 +204,6 @@ def process_orthogroup(
     sd = statistics.stdev(scores)
     result["tir_nscore"] = (result["tir_score"] - m) / sd
     result["tir_random_nscore"] = (result["tir_random_score"] - m) / sd
-
-    # assess fdr
-    flank_up = reg1[(ali_start - 10):ali_start]
-    flank_down = reg1[ali_end:(ali_end + 10)]
-    try:
-        fdr_alignments = aligner.align(flank_up.seq, flank_down.seq)
-    except ValueError: 
-        return(result)
-    try:
-        fdr_co = fdr_alignments[0].coordinates
-    except IndexError: 
-        return(result)
-    result["fdr_score"] = np.int64(fdr_alignments[0].score)
-    result["fdr_offset_up"] = np.int64(fdr_co[0, -1] - 10 - 1)
-    result["fdr_offset_down"] = np.int64(fdr_co[1, 0] + 1)
-    result["fdr_length"] = np.int64(fdr_co[0, -1] - fdr_co[0, 0])
-    result["fdr_up"] = flank_up[fdr_co[0, 0]:fdr_co[0, -1]]
-    result["fdr_down"] = flank_down[fdr_co[1, 0]:fdr_co[1, -1]]
 
     return(result)
 
@@ -267,11 +237,13 @@ def best_region(
     for gene in genes.itertuples():
         region_start = min(gene.end - max_length, gene.start)
         region_end = max(gene.start + max_length, gene.end)
-        if region_start < 0:
+        if region_start < 1:
             perfect_region = False
-            region_start = 0
+            region_start = 1
         assembly = Fasta(assembly_files[gene.genome])
-        region = assembly[gene.contig][region_start:region_end]
+        # important: pyfaidx sequence slicing uses a 0-base offset but gff 
+        # start/end positions use a 1-base offset!
+        region = assembly[gene.contig][(region_start - 1):region_end]
         if region.end < region_end:
             perfect_region = False
         uncalled_bases = region.seq.count("N")
