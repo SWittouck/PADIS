@@ -1,15 +1,19 @@
 # terms/abbreviations: 
-# - ext_region = extended region: DNA sequence around a gene to align 
-# - hom_region = homologous region: the section of the extended region that
+# - ext_region = extended region: DNA region around a gene
+# - hom_region = homologous region: the section of an extended region that
 #   aligns to another extended region
 # - term = terminus: first/last N nucleotides of aligned section
-# - start: start position of a DNA segment, always smaller than "end" and with a
-#   1-base offset (gff style)
-# - end: end position of a DNA segment, always greater than "start" and with a
-#   1-base offset (gff style)
+# - start: start position of a DNA segment, with a 1-base offset (gff style)
+# - end: end position of a DNA segment, with a 1-base offset (gff style)
 # - up = upstream
 # - down = downstream
 # - rc = reverse complement
+
+# remarks:
+# - The objects ext_region and hom_region are pyfaidx Sequence objects. They
+#   have a start and end coordinate that indicate their position on their
+#   contig. A Sequence object can be reverse complemented. In that case, the
+#   start position will be larger than the end position.
 
 from Bio import Align
 from concurrent.futures import ProcessPoolExecutor
@@ -207,7 +211,15 @@ def representative_homologous_region(
     aligner = Align.PairwiseAligner(scoring = "blastn")
     aligner.mode = "local"
 
-    if strategy == "pairwise_alignment":
+    if strategy == "multiple_alignment":
+
+        # check if at least two positions
+        if genes["position"].nunique() < 2:
+            raise RuntimeError("less than two positions determined")
+
+        # TO IMPLEMENT
+
+    elif strategy == "pairwise_alignment":
 
         # check if at least two positions
         if genes["position"].nunique() < 2:
@@ -224,21 +236,16 @@ def representative_homologous_region(
         )
 
         # align extended regions -> identify homologous region
-        strand = "+" if gene1.strand == gene2.strand else "-"
         alignment = aligner.align(
-            ext_region1.seq, ext_region2.seq, strand = strand
+            ext_region1.seq, ext_region2.seq, strand = "+"
         )[0]
         homco = alignment.coordinates
-        hom_region1 = ext_region1[homco[0, 0]:homco[0, -1]]
-        f, t = sorted(homco[1, [0, -1]])
-        hom_region2 = ext_region2[f:t]
+        hom_region1 = subseq(ext_region1, homco[0, 0], homco[0, -1])
 
         # check whether gene lies within homologous region
         if (
-            hom_region1.start > gene1.start
-            or hom_region1.end < gene1.end
-            or hom_region2.start > gene2.start
-            or hom_region2.end < gene2.end
+            min(hom_region1.start, hom_region1.end) > gene1.start
+            or max(hom_region1.start, hom_region1.end) < gene1.end
         ):
             raise RuntimeError("gene outside homologous region")
 
@@ -265,9 +272,6 @@ def representative_homologous_region(
 
         lg.error(f"Strategy {strategy} unknown")
         import sys; sys.exit(0)
-
-    if gene1.strand == "-":
-        hom_region1 = hom_region1.reverse.complement
 
     return(hom_region1)
 
@@ -312,6 +316,23 @@ def representative_extended_region(
             best_gene = gene
             best_region = region
         if perfect_region:
-            return(gene, region)
+            break
+
+    if best_gene.strand == "-":
+        best_region = best_region.reverse.complement
 
     return(best_gene, best_region)
+
+def subseq(seq, start, end):
+    """
+    Return a subsequence of a pyfaidx Sequence object.
+
+    seq[start:end] is correct syntax, but it produces a bug when subsetting a
+    reverse complemented sequence. The start and end positions are then
+    incorrectly adjusted. This is a workaround.
+    """
+    subseq = seq[start:end]
+    if seq.start > seq.end:
+        subseq.start = seq.start - start
+        subseq.end = seq.start - end + 1
+    return(subseq)
