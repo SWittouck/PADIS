@@ -54,8 +54,14 @@ def run_padis(
         output_dir.mkdir(exist_ok = False)
     acc_genes_file = output_dir / "accessory_genes.csv"
     intervals_file = output_dir / "intervals.csv" if write_intervals else None
-    acc_orthogroups_file = output_dir / "accessory_orthogroups.csv"
-    summary_file = output_dir / "summary.csv"
+    acc_orthogroups_pairwise_alignment_file = \
+        output_dir / "accessory_orthogroups_pairwise_alignment.csv"
+    acc_orthogroups_short_contigs_file = \
+        output_dir / "accessory_orthogroups_short_contigs.csv"
+    summary_pairwise_alignment_file = \
+        output_dir / "summary_pairwise_alignment.csv"
+    summary_short_contigs_file = \
+        output_dir / "summary_short_contigs.csv"
 
     # log file initiation
     # --> should happen after argument checking
@@ -73,10 +79,22 @@ def run_padis(
     lg.info("Starting phase 1: position assignment")
     assign_positions(annotation_files, genes, acc_genes_file, intervals_file)
 
-    lg.info("Starting phase 2: orthogroup assessment")
+    lg.info(
+        "Starting phase 2: orthogroup assessment - pairwise alignment strategy"
+    )
     assess_orthogroups(
-        acc_genes_file, assembly_files, acc_orthogroups_file, summary_file, 
-        max_length, threads
+        acc_genes_file, assembly_files, acc_orthogroups_pairwise_alignment_file,
+        summary_pairwise_alignment_file, max_length, threads,
+        "pairwise_alignment"
+    )
+
+    lg.info(
+        "Starting phase 2: orthogroup assessment - short contigs strategy"
+    )
+    assess_orthogroups(
+        acc_genes_file, assembly_files, acc_orthogroups_short_contigs_file,
+        summary_short_contigs_file, max_length, threads,
+        "short_contigs"
     )
 
     lg.info("PADIS out\n")

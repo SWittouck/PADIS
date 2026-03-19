@@ -30,7 +30,7 @@ from .input import read_acc_genes
 def assess_orthogroups(
         acc_genes_file: Path, assembly_files: dict[str, Path],
         acc_orthogroups_file: Path, summary_file: Path, max_length: int,
-        threads: int
+        threads: int, strategy: str
     ) -> None:
     """
     Assess accessory orthogroups for IS status.
@@ -67,7 +67,7 @@ def assess_orthogroups(
             acc_genes
             .groupby("orthogroup")
             .apply(lambda genes: process_orthogroup(
-                genes, assembly_files, max_length
+                genes, assembly_files, max_length, strategy
             ))
             .reset_index(drop = True)
         )
@@ -76,8 +76,10 @@ def assess_orthogroups(
             f"Assessing flanking regions per orthogroup using {threads} "
             "threads"
         )
-        tasks = [(orthogroup, genes, assembly_files, max_length) for
-            orthogroup, genes in acc_genes.groupby("orthogroup", sort = False)]
+        tasks = [
+            (orthogroup, genes, assembly_files, max_length, strategy) for
+            orthogroup, genes in acc_genes.groupby("orthogroup", sort = False)
+        ]
         with ProcessPoolExecutor(max_workers = threads) as executor: 
             results = list(executor.map(_worker, tasks))
         acc_ogs = pd.DataFrame(results)
@@ -97,9 +99,17 @@ def assess_orthogroups(
 # lower level #
 ###############
 
+# helper for running process_orthogroup in parallel
+# needs to be top-level function
+def _worker(task):
+    orthogroup, genes, assembly_files, max_length, strategy = task
+    genes.name = orthogroup
+    result = process_orthogroup(genes, assembly_files, max_length, strategy)
+    return(result)
+
 def process_orthogroup(
-        genes: pd.DataFrame, assembly_files: dict[str, Path],
-        max_length: int
+        genes: pd.DataFrame, assembly_files: dict[str, Path], max_length: int,
+        strategy: str
     ) -> pd.Series:
 
     orthogroup = genes.name
@@ -125,98 +135,144 @@ def process_orthogroup(
         "tir_down": ""
     })
 
-    if result["genes"] == 1:
-        result["status"] = "singleton"
+    # identify homologous region
+    try:
+        hom_region = representative_homologous_region(
+            genes, assembly_files, max_length, strategy
+        )
+    except RuntimeError as e:
+        result["status"] = e.args[0]
         return(result)
-    if result["located"] <= 1:
-        result["status"] = "insufficient positions"
-        return(result)
-    if result["positions"] == 1:
-        result["status"] = "no position variation"
-        return(result)
-
-    # make copy to avoid modifying original gene table 
-    genes = genes.copy()
-
-    # identify two example extended regions
-    genes = genes[genes["position"].notna()]
-    gene1, ext_region1 = best_region(assembly_files, genes, max_length)
-    genes = genes.loc[(genes["position"] != gene1.position)]
-    gene2, ext_region2 = best_region(assembly_files, genes, max_length)
-
-    # align extended regions -> identify homologous region
-    aligner = Align.PairwiseAligner(scoring = "blastn")
-    aligner.mode = "local"
-    strand = "+" if gene1.strand == gene2.strand else "-"
-    alignment = aligner.align(
-        ext_region1.seq, ext_region2.seq, strand = strand
-    )[0]
-    homco = alignment.coordinates
-    hom_region1 = ext_region1[homco[0, 0]:homco[0, -1]]
-    f, t = sorted(homco[1, [0, -1]])
-    hom_region2 = ext_region2[f:t]
 
     # determine length of homologous region
-    result["length"] = len(hom_region1)
+    result["length"] = len(hom_region)
     if result["length"] > max_length:
         result["status"] = "too long"
         return(result)
 
-    # check whether gene lies within homologous region
-    if (
-        hom_region1.start > gene1.start
-        or hom_region1.end < gene1.end
-        or hom_region2.start > gene2.start
-        or hom_region2.end < gene2.end
-    ):
-        result["status"] = "gene outside homologous region"
-        return(result)
+    # set up aligner
+    aligner = Align.PairwiseAligner(scoring = "blastn")
+    aligner.mode = "local"
 
     # assess tir of homologous region
-    if gene1.strand == "-":
-        ext_region1 = ext_region1.reverse.complement
-    termseq_up = hom_region1[:30].seq
-    termseq_down = hom_region1[-30:].seq
-    tir_alignment = aligner.align(termseq_up, termseq_down, strand = "-")[0]
-    tir_co = tir_alignment.coordinates
+    termseq_up = hom_region[:30].seq
+    termseq_down = hom_region[-30:].seq
+    tir_alignments = aligner.align(termseq_up, termseq_down, strand = "-")
+    if not tir_alignments:
+        result["tir_score"] = 0
+        return(result)
+    tir_alignment = tir_alignments[0]
+    tirco = tir_alignment.coordinates
     result["tir_score"] = np.int64(tir_alignment.score)
-    result["tir_offset_up"] = np.int64(tir_co[0, 0])
-    result["tir_offset_down"] = np.int64(30 - tir_co[1, 0])
+    result["tir_offset_up"] = np.int64(tirco[0, 0])
+    result["tir_offset_down"] = np.int64(30 - tirco[1, 0])
     result["tir_length"] = np.int64(tir_alignment.length)
     result["tir_up"] = tir_alignment[0]
     result["tir_down"] = tir_alignment[1]
 
     # assess randomized tir
     randomseq_down = ''.join(sample(termseq_down,len(termseq_down)))
-    tir_alignment = aligner.align(termseq_up, randomseq_down, strand = "-")[0]
-    result["tir_random_score"] = np.int64(tir_alignment.score)
-    result["tir_random_length"] = np.int64(tir_alignment.length)
+    tir_alignments = aligner.align(termseq_up, randomseq_down, strand = "-")
+    if tir_alignments:
+        tir_alignment = tir_alignments[0]
+        result["tir_random_score"] = np.int64(tir_alignment.score)
+        result["tir_random_length"] = np.int64(tir_alignment.length)
 
     # normalize tir scores
     scores = []
     for i in range(100):
         randomseq_down = ''.join(sample(termseq_down,len(termseq_down)))
-        tir_alignment = aligner.align(
-            termseq_up, randomseq_down, strand = "-"
-        )[0]
-        scores.append(tir_alignment.score)
+        tir_alignments = aligner.align(termseq_up, randomseq_down, strand = "-")
+        if tir_alignments:
+            scores.append(tir_alignments[0].score)
+        else:
+            scores.append(0)
     m = statistics.mean(scores)
     sd = statistics.stdev(scores)
+    if sd == 0: return(result)
     result["tir_nscore"] = (result["tir_score"] - m) / sd
     result["tir_random_nscore"] = (result["tir_random_score"] - m) / sd
 
     return(result)
 
-# helper for running process_orthogroup in parallel 
-# needs to be top-level function
-def _worker(task):
-    orthogroup, genes, assembly_files, max_length = task
-    genes.name = orthogroup
-    result = process_orthogroup(genes, assembly_files, max_length)
-    return(result)
+def representative_homologous_region(
+        genes: pd.DataFrame, assembly_files: dict[str, Path], max_length: int,
+        strategy: str
+    ) -> pd.Series:
 
-def best_region(
-        assembly_files: dict[str, Path], genes: pd.DataFrame, max_length: int
+    # make copy to avoid modifying original gene table 
+    genes = genes.copy()
+
+    # set up aligner
+    aligner = Align.PairwiseAligner(scoring = "blastn")
+    aligner.mode = "local"
+
+    if strategy == "pairwise_alignment":
+
+        # check if at least two positions
+        if genes["position"].nunique() < 2:
+            raise RuntimeError("less than two positions determined")
+
+        # identify two example extended regions
+        genes = genes[genes["position"].notna()]
+        gene1, ext_region1 = representative_extended_region(
+            genes, assembly_files, max_length
+        )
+        genes = genes.loc[(genes["position"] != gene1.position)]
+        gene2, ext_region2 = representative_extended_region(
+            genes, assembly_files, max_length
+        )
+
+        # align extended regions -> identify homologous region
+        strand = "+" if gene1.strand == gene2.strand else "-"
+        alignment = aligner.align(
+            ext_region1.seq, ext_region2.seq, strand = strand
+        )[0]
+        homco = alignment.coordinates
+        hom_region1 = ext_region1[homco[0, 0]:homco[0, -1]]
+        f, t = sorted(homco[1, [0, -1]])
+        hom_region2 = ext_region2[f:t]
+
+        # check whether gene lies within homologous region
+        if (
+            hom_region1.start > gene1.start
+            or hom_region1.end < gene1.end
+            or hom_region2.start > gene2.start
+            or hom_region2.end < gene2.end
+        ):
+            raise RuntimeError("gene outside homologous region")
+
+    elif strategy == "short_contigs":
+
+        if genes["position"].count() == genes["gene"].size:
+            raise RuntimeError("all genes located")
+
+        genes = genes[genes["position"].isna()]
+        genes["contig_length"] = [
+            len(Fasta(assembly_files[gene.genome])[gene.contig]) for gene in
+            genes.itertuples()
+        ]
+        genes = genes[genes["contig_length"] <= max_length]
+
+        if genes.empty:
+            raise RuntimeError("too long")
+
+        gene_ix = genes["contig_length"].idxmax()
+        gene1 = genes.loc[gene_ix]
+        hom_region1 = Fasta(assembly_files[gene1.genome])[gene1.contig][:]
+
+    else:
+
+        lg.error(f"Strategy {strategy} unknown")
+        import sys; sys.exit(0)
+
+    if gene1.strand == "-":
+        hom_region1 = hom_region1.reverse.complement
+
+    return(hom_region1)
+
+def representative_extended_region(
+        genes: pd.DataFrame, assembly_files: dict[str, Path], max_length: int
     ) -> tuple[tuple, Sequence]:
     """
     Find the gene with the best surrounding region.
