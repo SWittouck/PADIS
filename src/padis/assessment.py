@@ -24,6 +24,7 @@ from pathlib import Path
 from pyfaidx import Fasta, Sequence
 from random import sample
 import statistics
+import subprocess
 
 from .input import read_acc_genes
 
@@ -116,6 +117,8 @@ def process_orthogroup(
         strategy: str
     ) -> pd.Series:
 
+    term_length = 100
+
     orthogroup = genes.name
     lg.debug(f"Processing orthogroup {orthogroup}")
 
@@ -139,6 +142,17 @@ def process_orthogroup(
         "tir_down": ""
     })
 
+    if strategy in ["pairwise_alignment", "multiple_alignment"]:
+        if result["genes"] == 1:
+            result["status"] = "singleton"
+            return(result)
+        if result["located"] <= 1:
+            result["status"] = "insufficient positions"
+            return(result)
+        if result["positions"] == 1:
+            result["status"] = "no position variation"
+            return(result)
+
     # identify homologous region
     try:
         hom_region = representative_homologous_region(
@@ -159,8 +173,8 @@ def process_orthogroup(
     aligner.mode = "local"
 
     # assess tir of homologous region
-    termseq_up = hom_region[:30].seq
-    termseq_down = hom_region[-30:].seq
+    termseq_up = hom_region[:term_length].seq
+    termseq_down = hom_region[-term_length:].seq
     tir_alignments = aligner.align(termseq_up, termseq_down, strand = "-")
     if not tir_alignments:
         result["tir_score"] = 0
@@ -169,7 +183,7 @@ def process_orthogroup(
     tirco = tir_alignment.coordinates
     result["tir_score"] = np.int64(tir_alignment.score)
     result["tir_offset_up"] = np.int64(tirco[0, 0])
-    result["tir_offset_down"] = np.int64(30 - tirco[1, 0])
+    result["tir_offset_down"] = np.int64(term_length - tirco[1, 0])
     result["tir_length"] = np.int64(tir_alignment.length)
     result["tir_up"] = tir_alignment[0]
     result["tir_down"] = tir_alignment[1]
@@ -204,6 +218,8 @@ def representative_homologous_region(
         strategy: str
     ) -> pd.Series:
 
+    orthogroup = genes.name
+
     # make copy to avoid modifying original gene table 
     genes = genes.copy()
 
@@ -213,17 +229,21 @@ def representative_homologous_region(
 
     if strategy == "multiple_alignment":
 
-        # check if at least two positions
-        if genes["position"].nunique() < 2:
-            raise RuntimeError("less than two positions determined")
+        extended_regions = [
+            representative_extended_region(
+                genes, assembly_files, max_length
+            )[1] for position, genes in genes.groupby("position")
+        ]
 
-        # TO IMPLEMENT
+        ali = multiple_alignment(extended_regions[0:10])
+
+        ali_file = Path("~/padis_alignments") / f"{orthogroup}.aln"
+        with open(ali_file, "w") as ali_handle:
+            ali_handle.write(ali)
+
+        hom_region1 = extended_regions[0]
 
     elif strategy == "pairwise_alignment":
-
-        # check if at least two positions
-        if genes["position"].nunique() < 2:
-            raise RuntimeError("less than two positions determined")
 
         # identify two example extended regions
         genes = genes[genes["position"].notna()]
@@ -336,3 +356,21 @@ def subseq(seq, start, end):
         subseq.start = seq.start - start
         subseq.end = seq.start - end + 1
     return(subseq)
+
+def multiple_alignment(seqs):
+    """
+    Align a list of sequences with MAFFT.
+    """
+
+    fasta = (
+        "\n"
+        .join(f">seq{i}\n{seq}" for i, seq in enumerate(seqs))
+        .encode()
+    )
+
+    ali = subprocess.run(
+        ["mafft", "-"], input = fasta, stdout = subprocess.PIPE,
+        stderr = subprocess.PIPE
+    )
+
+    return(ali.stdout.decode())

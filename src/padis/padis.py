@@ -55,11 +55,15 @@ def run_padis(
     acc_genes_file = output_dir / "accessory_genes.csv"
     intervals_file = output_dir / "intervals.csv" if write_intervals else None
     acc_orthogroups_pairwise_alignment_file = \
-        output_dir / "accessory_orthogroups_pairwise_alignment.csv"
+        output_dir / "accessory_orthogroups.csv"
+    acc_orthogroups_multiple_alignment_file = \
+        output_dir / "accessory_orthogroups_multiple_alignment.csv"
     acc_orthogroups_short_contigs_file = \
         output_dir / "accessory_orthogroups_short_contigs.csv"
     summary_pairwise_alignment_file = \
-        output_dir / "summary_pairwise_alignment.csv"
+        output_dir / "summary.csv"
+    summary_multiple_alignment_file = \
+        output_dir / "summary_multiple_alignment.csv"
     summary_short_contigs_file = \
         output_dir / "summary_short_contigs.csv"
 
@@ -87,6 +91,15 @@ def run_padis(
         summary_pairwise_alignment_file, max_length, threads,
         "pairwise_alignment"
     )
+
+    # lg.info(
+    #     "Starting phase 2: orthogroup assessment - multiple alignment strategy"
+    # )
+    # assess_orthogroups(
+    #     acc_genes_file, assembly_files, acc_orthogroups_multiple_alignment_file,
+    #     summary_multiple_alignment_file, max_length, threads,
+    #     "multiple_alignment"
+    # )
 
     lg.info(
         "Starting phase 2: orthogroup assessment - short contigs strategy"
