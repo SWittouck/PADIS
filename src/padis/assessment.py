@@ -144,13 +144,7 @@ def process_orthogroup(
 
     if strategy in ["pairwise_alignment", "multiple_alignment"]:
         if result["genes"] == 1:
-            result["status"] = "singleton"
-            return(result)
-        if result["located"] <= 1:
-            result["status"] = "insufficient positions"
-            return(result)
-        if result["positions"] == 1:
-            result["status"] = "no position variation"
+            result["status"] = "singleton orthogroup"
             return(result)
 
     # identify homologous region
@@ -165,7 +159,7 @@ def process_orthogroup(
     # determine length of homologous region
     result["length"] = len(hom_region)
     if result["length"] > max_length:
-        result["status"] = "too long"
+        result["status"] = "homologous region too long"
         return(result)
 
     # set up aligner
@@ -243,17 +237,36 @@ def representative_homologous_region(
 
         hom_region1 = extended_regions[0]
 
+        # to finish
+
     elif strategy == "pairwise_alignment":
 
         # identify two example extended regions
-        genes = genes[genes["position"].notna()]
-        gene1, ext_region1 = representative_extended_region(
-            genes, assembly_files, max_length
+        genome, copy_number = (
+            genes["genome"]
+            .value_counts()
+            .agg(["idxmax", "max"])
         )
-        genes = genes.loc[(genes["position"] != gene1.position)]
-        gene2, ext_region2 = representative_extended_region(
-            genes, assembly_files, max_length
-        )
+        if genes["position"].nunique() > 1:
+            genes = genes[genes["position"].notna()]
+            gene1, ext_region1 = representative_extended_region(
+                genes, assembly_files, max_length
+            )
+            genes = genes.loc[genes["position"] != gene1.position]
+            gene2, ext_region2 = representative_extended_region(
+                genes, assembly_files, max_length
+            )
+        elif copy_number > 1:
+            genes = genes[genes["genome"] == genome]
+            gene1, ext_region1 = representative_extended_region(
+                genes, assembly_files, max_length
+            )
+            genes = genes.loc[genes["gene"] != gene1.gene]
+            gene2, ext_region2 = representative_extended_region(
+                genes, assembly_files, max_length
+            )
+        else:
+            raise RuntimeError("no multipositionality evidence")
 
         # align extended regions -> identify homologous region
         alignment = aligner.align(
@@ -282,7 +295,7 @@ def representative_homologous_region(
         genes = genes[genes["contig_length"] <= max_length]
 
         if genes.empty:
-            raise RuntimeError("too long")
+            raise RuntimeError("homologous region too long")
 
         gene_ix = genes["contig_length"].idxmax()
         gene1 = genes.loc[gene_ix]
