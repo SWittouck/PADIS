@@ -138,8 +138,14 @@ def process_orthogroup(
         "tir_random_score": pd.NA,
         "tir_random_nscore": pd.NA,
         "tir_random_length": pd.NA,
+        "fdr_score": pd.NA,
+        "fdr_length": pd.NA,
+        "fdr_offset_up": pd.NA,
+        "fdr_offset_down": pd.NA,
         "tir_up": "",
-        "tir_down": ""
+        "tir_down": "",
+        "fdr_up": "",
+        "fdr_down": ""
     })
 
     if strategy in ["pairwise_alignment", "multiple_alignment"]:
@@ -167,20 +173,26 @@ def process_orthogroup(
     aligner.mode = "local"
 
     # assess tir of homologous region
+    term_length = min(len(hom_region) // 2, term_length)
     termseq_up = hom_region[:term_length].seq
+    termseq_down = hom_region[-term_length:].reverse.complement.seq
+    aliresult = pairwise_alignment(aligner, termseq_up, termseq_down)
+    result["tir_score"] = aliresult[0]
+    result["tir_length"] = aliresult[1]
+    result["tir_offset_up"] = aliresult[2]
+    result["tir_offset_down"] = aliresult[4]
+    result["tir_up"] = aliresult[6]
+    result["tir_down"] = aliresult[7]
+
+    # assess fdr of homologous region
     termseq_down = hom_region[-term_length:].seq
-    tir_alignments = aligner.align(termseq_up, termseq_down, strand = "-")
-    if not tir_alignments:
-        result["tir_score"] = 0
-        return(result)
-    tir_alignment = tir_alignments[0]
-    tirco = tir_alignment.coordinates
-    result["tir_score"] = np.int64(tir_alignment.score)
-    result["tir_offset_up"] = np.int64(tirco[0, 0])
-    result["tir_offset_down"] = np.int64(term_length - tirco[1, 0])
-    result["tir_length"] = np.int64(tir_alignment.length)
-    result["tir_up"] = tir_alignment[0]
-    result["tir_down"] = tir_alignment[1]
+    aliresult = pairwise_alignment(aligner, termseq_up, termseq_down)
+    result["fdr_score"] = aliresult[0]
+    result["fdr_length"] = aliresult[1]
+    result["fdr_offset_up"] = aliresult[2]
+    result["fdr_offset_down"] = term_length - aliresult[5]
+    result["fdr_up"] = aliresult[6]
+    result["fdr_down"] = aliresult[7]
 
     # assess randomized tir
     randomseq_down = ''.join(sample(termseq_down,len(termseq_down)))
@@ -387,3 +399,21 @@ def multiple_alignment(seqs):
     )
 
     return(ali.stdout.decode())
+
+def pairwise_alignment(aligner, seq1, seq2):
+    alignments = aligner.align(seq1, seq2)
+    if not alignments:
+        return((0, pd.NA, pd.NA, pd.NA, pd.NA, pd.NA, pd.NA, pd.NA))
+    alignment = alignments[0]
+    alico = alignment.coordinates
+    score = np.int64(alignment.score)
+    length = np.int64(alignment.length)
+    ali1_start = np.int64(alico[0, 0])
+    ali1_end = np.int64(alico[0, -1])
+    ali2_start = np.int64(alico[1, 0])
+    ali2_end = np.int64(alico[1, -1])
+    ali1 = alignment[0]
+    ali2 = alignment[1]
+    return((
+        score, length, ali1_start, ali1_end, ali2_start, ali2_end, ali1, ali2
+    ))
