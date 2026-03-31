@@ -25,6 +25,7 @@ from pyfaidx import Fasta, Sequence
 from random import sample
 import statistics
 import subprocess
+import tempfile
 
 from .input import read_acc_genes
 
@@ -35,7 +36,7 @@ from .input import read_acc_genes
 def assess_orthogroups(
         acc_genes_file: Path, assembly_files: dict[str, Path],
         acc_orthogroups_file: Path, summary_file: Path, max_length: int,
-        threads: int, strategy: str
+        threads: int, strategy: str, ali_dir: Path = None
     ) -> None:
     """
     Assess accessory orthogroups for IS status.
@@ -55,6 +56,15 @@ def assess_orthogroups(
         )
         return() 
     
+    if strategy == "pairwise_alignment":
+        if not ali_dir:
+            lg.error(
+                "Pairwise alignment strategy needs a folder for alignments"
+            )
+            sys.exit(1)
+        lg.info("Creating output folder for alignments")
+        ali_dir.mkdir(exist_ok = True)
+
     lg.info("Reading accessory gene table")
     acc_genes = read_acc_genes(acc_genes_file)
 
@@ -72,7 +82,7 @@ def assess_orthogroups(
             acc_genes
             .groupby("orthogroup")
             .apply(lambda genes: process_orthogroup(
-                genes, assembly_files, max_length, strategy
+                genes, assembly_files, max_length, strategy, ali_dir
             ))
             .reset_index(drop = True)
         )
@@ -82,7 +92,9 @@ def assess_orthogroups(
             "threads"
         )
         tasks = [
-            (orthogroup, genes, assembly_files, max_length, strategy) for
+            (
+                orthogroup, genes, assembly_files, max_length, strategy, ali_dir
+            ) for
             orthogroup, genes in acc_genes.groupby("orthogroup", sort = False)
         ]
         with ProcessPoolExecutor(max_workers = threads) as executor: 
@@ -107,14 +119,16 @@ def assess_orthogroups(
 # helper for running process_orthogroup in parallel
 # needs to be top-level function
 def _worker(task):
-    orthogroup, genes, assembly_files, max_length, strategy = task
+    orthogroup, genes, assembly_files, max_length, strategy, ali_dir = task
     genes.name = orthogroup
-    result = process_orthogroup(genes, assembly_files, max_length, strategy)
+    result = process_orthogroup(
+        genes, assembly_files, max_length, strategy, ali_dir
+    )
     return(result)
 
 def process_orthogroup(
         genes: pd.DataFrame, assembly_files: dict[str, Path], max_length: int,
-        strategy: str
+        strategy: str, ali_dir: Path
     ) -> pd.Series:
 
     term_length = 100
@@ -156,7 +170,7 @@ def process_orthogroup(
     # identify homologous region
     try:
         hom_region = representative_homologous_region(
-            genes, assembly_files, max_length, strategy
+            genes, assembly_files, max_length, strategy, ali_dir
         )
     except RuntimeError as e:
         result["status"] = e.args[0]
@@ -221,17 +235,13 @@ def process_orthogroup(
 
 def representative_homologous_region(
         genes: pd.DataFrame, assembly_files: dict[str, Path], max_length: int,
-        strategy: str
+        strategy: str, ali_dir: Path
     ) -> pd.Series:
 
     orthogroup = genes.name
 
     # make copy to avoid modifying original gene table 
     genes = genes.copy()
-
-    # set up aligner
-    aligner = Align.PairwiseAligner(scoring = "blastn")
-    aligner.mode = "local"
 
     if strategy == "multiple_alignment":
 
@@ -280,19 +290,45 @@ def representative_homologous_region(
         else:
             raise RuntimeError("no multipositionality evidence")
 
-        # align extended regions -> identify homologous region
-        alignment = aligner.align(
-            ext_region1.seq, ext_region2.seq, strand = "+"
-        )[0]
-        homco = alignment.coordinates
-        hom_region1 = subseq(ext_region1, homco[0, 0], homco[0, -1])
+        # set up aligner
+        aligner = Align.PairwiseAligner(scoring = "blastn", mode = "local")
 
-        # check whether gene lies within homologous region
-        if (
-            min(hom_region1.start, hom_region1.end) > gene1.start
-            or max(hom_region1.start, hom_region1.end) < gene1.end
-        ):
-            raise RuntimeError("gene outside homologous region")
+        # align extended regions -> identify homologous region
+        alignment_up = aligner.align(
+            ext_region1.seq[:max_length], ext_region2.seq[:max_length],
+            strand = "+"
+        )[0]
+        homco_up = alignment_up.coordinates
+        alignment_down = aligner.align(
+            ext_region1.seq[-max_length:], ext_region2.seq[-max_length:],
+            strand = "+"
+        )[0]
+        homco_down = alignment_down.coordinates
+        gene1_length = gene1.end - gene1.start + 1
+        start = homco_up[0, 0]
+        end = homco_down[0, -1] + max_length - gene1_length
+        hom_region1 = ext_region1[start:end]
+
+        # write alignments
+        Align.write(alignment_up, ali_dir / f"{orthogroup}_up.aln", "fasta")
+        Align.write(alignment_down, ali_dir / f"{orthogroup}_down.aln", "fasta")
+
+        # hits_up = blastn_pairwise(
+        #     ext_region1.seq[:max_length], ext_region2.seq[:max_length]
+        # )
+        # if hits_up.empty:
+        #     raise RuntimeError("no homology detected")
+        # start = hits_up["qstart"].max() - 1
+        # hits_down = blastn_pairwise(
+        #     ext_region1.seq[-max_length:], ext_region2.seq[-max_length:]
+        # )
+        # if hits_down.empty:
+        #     raise RuntimeError("no homology detected")
+        # gene1_length = gene1.end - gene1.start + 1
+        # end = hits_down["qend"].min() + max_length - gene1_length
+        # if start >= end:
+        #     raise RuntimeError("gene not fully homologous")
+        # hom_region1 = ext_region1[start:end]
 
     elif strategy == "short_contigs":
 
@@ -340,8 +376,10 @@ def representative_extended_region(
     perfect_region = True
 
     for gene in genes.itertuples():
-        region_start = min(gene.end - max_length, gene.start)
-        region_end = max(gene.start + max_length, gene.end)
+        # example: a region of 100 nucleotides starting at position 500 in gff
+        # coordinates would be 500 to 599 --> 500 to (500 + 100 - 1)
+        region_start = min(gene.end - max_length + 1, gene.start)
+        region_end = max(gene.start + max_length - 1, gene.end)
         if region_start < 1:
             perfect_region = False
             region_start = 1
@@ -375,6 +413,8 @@ def subseq(seq, start, end):
     seq[start:end] is correct syntax, but it produces a bug when subsetting a
     reverse complemented sequence. The start and end positions are then
     incorrectly adjusted. This is a workaround.
+
+    The pyfaidx bug was fixed in version 0.9.0.4.
     """
     subseq = seq[start:end]
     if seq.start > seq.end:
@@ -417,3 +457,55 @@ def pairwise_alignment(aligner, seq1, seq2):
     return((
         score, length, ali1_start, ali1_end, ali2_start, ali2_end, ali1, ali2
     ))
+
+def blastn_pairwise(query_seq, subject_seq):
+    """
+    Align two sequences with blastn.
+    """
+
+    with (
+        tempfile.NamedTemporaryFile(
+            mode = "w", suffix = ".fa", delete = True, delete_on_close = False
+        ) as query_handle,
+        tempfile.NamedTemporaryFile(
+            mode = "w", suffix = ".fa", delete = True, delete_on_close = False
+        ) as subject_handle
+    ):
+
+        query_handle.write(">query\n" + query_seq + "\n")
+        subject_handle.write(">subject\n" + subject_seq + "\n")
+
+        query_file = query_handle.name
+        subject_file = subject_handle.name
+
+        query_handle.close()
+        subject_handle.close()
+
+        cmd = [
+            "blastn",
+            "-query", query_file,
+            "-subject", subject_file,
+            "-outfmt", "6",
+            "-strand", "plus"
+        ]
+
+        result = subprocess.run(
+            cmd, capture_output = True, text = True, check = True
+        )
+
+        output = result.stdout.strip()
+
+        colnames = [
+            "qseqid", "sseqid", "pident", "length", "mismatch", "gapopen",
+            "qstart", "qend", "sstart", "send", "evalue", "bitscore"
+        ]
+        hits = [line.split("\t") for line in output.splitlines()]
+        hits = pd.DataFrame(hits, columns = colnames)
+
+        numeric_cols = [
+            "pident", "length", "mismatch", "gapopen", "qstart", "qend",
+            "sstart", "send", "evalue", "bitscore"
+        ]
+        hits[numeric_cols] = hits[numeric_cols].apply(pd.to_numeric)
+
+    return(hits)

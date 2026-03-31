@@ -66,6 +66,7 @@ def run_padis(
         output_dir / "summary_multiple_alignment.csv"
     summary_short_contigs_file = \
         output_dir / "summary_short_contigs.csv"
+    ali_dir = output_dir / "alignments"
 
     # log file initiation
     # --> should happen after argument checking
@@ -89,7 +90,7 @@ def run_padis(
     assess_orthogroups(
         acc_genes_file, assembly_files, acc_orthogroups_pairwise_alignment_file,
         summary_pairwise_alignment_file, max_length, threads,
-        "pairwise_alignment"
+        "pairwise_alignment", ali_dir
     )
 
     # lg.info(
