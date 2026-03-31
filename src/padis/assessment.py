@@ -406,22 +406,6 @@ def representative_extended_region(
 
     return(best_gene, best_region)
 
-def subseq(seq, start, end):
-    """
-    Return a subsequence of a pyfaidx Sequence object.
-
-    seq[start:end] is correct syntax, but it produces a bug when subsetting a
-    reverse complemented sequence. The start and end positions are then
-    incorrectly adjusted. This is a workaround.
-
-    The pyfaidx bug was fixed in version 0.9.0.4.
-    """
-    subseq = seq[start:end]
-    if seq.start > seq.end:
-        subseq.start = seq.start - start
-        subseq.end = seq.start - end + 1
-    return(subseq)
-
 def multiple_alignment(seqs):
     """
     Align a list of sequences with MAFFT.
